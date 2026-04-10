@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>房间匹配 - 天尊神域对战徽章</title>
+    <link rel="stylesheet" href="styles.css">
+
+</head>
+<body>
+    <div id="room-match-container" style="background-image: url('images/match-background.png'); text-align: center; padding: 40px; background-size: cover; background-position: center; background-repeat: no-repeat; backdrop-filter: blur(20px); border-radius: 30px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), 0 0 100px rgba(255, 204, 0, 0.1); border: 2px solid rgba(255, 204, 0, 0.2); width: 500px; height: 800px; display: flex; flex-direction: column; position: relative; animation: fadeIn 0.8s ease-out;">
+        <h2 style="color: #ffcc00; font-size: 36px; margin-top: 50px; margin-bottom: 60px;">房间匹配</h2>
+        
+        <div id="match-container" style="display: flex; flex-direction: column; align-items: center; gap: 30px; flex: 1;">
+            <div style="display: flex; gap: 20px; justify-content: center;">
+                <button id="create-room-btn" class="menu-btn" style="width: 120px; height: 50px; font-size: 12px; white-space: nowrap; writing-mode: horizontal-tb; text-orientation: mixed; display: flex; align-items: center; justify-content: center;">创建房间</button>
+                <button id="join-room-btn" class="menu-btn" style="width: 120px; height: 50px; font-size: 12px; white-space: nowrap; writing-mode: horizontal-tb; text-orientation: mixed; display: flex; align-items: center; justify-content: center;">加入房间</button>
+            </div>
+            
+            <div id="room-list" style="display: none; width: 200px; max-height: 300px; overflow-y: auto; background: rgba(0, 0, 0, 0.7); border: 2px solid #ffcc00; border-radius: 20px; padding: 20px; margin-top: 20px;">
+                <h3 style="color: #ffcc00; margin-top: 0; margin-bottom: 20px; font-size: 16px;">可用房间</h3>
+                <div id="room-items"></div>
+            </div>
+            
+            <div id="room-id-display" style="display: none; text-align: center; color: #fff; font-size: 16px;">
+                <p>房间ID: <span id="room-id" style="color: #ffcc00; font-weight: bold; font-size: 20px;"></span></p>
+                <p style="margin-top: 10px;">等待其他玩家加入...</p>
+            </div>
+            
+            <button id="back-btn" class="menu-btn" style="width: 120px; height: 50px; font-size: 12px; white-space: nowrap; background: linear-gradient(145deg, #333, #444); color: #ffcc00; border: 2px solid #ffcc00; margin-top: auto; margin-bottom: 30px; display: flex; align-items: center; justify-content: center;">返回首页</button>
+        </div>
+    </div>
+
+    <script>
+        // Bmob配置
+        const BmobAppId = '516f254f000c374ba7093e6562c8953e';
+        const BmobRestApiKey = '19d9df1591721fe63dc41533dbf8f2c7';
+        const BmobApiBase = 'https://api.bmobcloud.com/1/classes';
+
+        // 全局变量
+        let currentRoomId = null;
+        let currentRoomObjectId = null;
+        let playerId = 'player_' + Math.random().toString(36).substring(2, 10);
+        let watchInterval = null;
+
+        // 音频对象
+        const tapSound = new Audio('audio/tap.mp3');
+
+        // 播放点击音效
+        function playTapSound() {
+            tapSound.currentTime = 0;
+            tapSound.play().catch(e => console.log('点击音效播放失败:', e));
+        }
+
+        // 通用的Bmob请求函数
+        async function bmobRequest(url, method = 'GET', data = null) {
+            const headers = {
+                'X-Bmob-Application-Id': BmobAppId,
+                'X-Bmob-REST-API-Key': BmobRestApiKey,
+                'Content-Type': 'application/json'
+            };
+
+            const options = {
+                method: method,
+                headers: headers
+            };
+
+            if (data) {
+                options.body = JSON.stringify(data);
+            }
+
+            console.log('Bmob请求:', method, url, data);
+
+            try {
+                const response = await fetch(url, options);
+                const responseText = await response.text();
+                console.log('Bmob响应状态:', response.status);
+                console.log('Bmob响应内容:', responseText);
+                
+                if (!response.ok) {
+                    try {
+                        const error = JSON.parse(responseText);
+                        console.error('Bmob请求错误:', error);
+                        alert('Bmob错误: ' + (error.error || '未知错误'));
+                    } catch (e) {
+                        console.error('Bmob请求错误(非JSON):', responseText);
+                        alert('Bmob错误: ' + responseText);
+                    }
+                    return null;
+                }
+                
+                try {
+                    return JSON.parse(responseText);
+                } catch (e) {
+                    return responseText;
+                }
+            } catch (error) {
+                console.error('Bmob请求异常:', error);
+                alert('网络请求异常: ' + error.message);
+                return null;
+            }
+        }
+
+        // 获取房间列表
+        async function getRooms() {
+            const url = `${BmobApiBase}/GameRoom?where={"status":"waiting"}`;
+            const result = await bmobRequest(url);
+            return result ? result.results : [];
+        }
+
+        // 保存房间
+        async function saveRoom(roomData) {
+            const url = `${BmobApiBase}/GameRoom`;
+            return await bmobRequest(url, 'POST', roomData);
+        }
+
+        // 更新房间
+        async function updateRoom(objectId, roomData) {
+            const url = `${BmobApiBase}/GameRoom/${objectId}`;
+            return await bmobRequest(url, 'PUT', roomData);
+        }
+
+        // 获取单个房间
+        async function getRoom(objectId) {
+            const url = `${BmobApiBase}/GameRoom/${objectId}`;
+            return await bmobRequest(url);
+        }
+
+        // 创建房间
+        async function createRoom() {
+            const roomId = 'room_' + Math.random().toString(36).substring(2, 10);
+            const newRoom = {
+                id: roomId,
+                status: "waiting",
+                player1Id: playerId,
+                player1BadgeId: 0,
+                player1Ready: false,
+                player2Id: "",
+                player2BadgeId: 0,
+                player2Ready: false
+            };
+
+            const result = await saveRoom(newRoom);
+            if (result) {
+                currentRoomId = roomId;
+                currentRoomObjectId = result.objectId;
+                console.log("房间创建成功，ID:", currentRoomId, "objectId:", currentRoomObjectId);
+                document.getElementById("room-id").textContent = currentRoomId;
+                document.getElementById("room-id-display").style.display = "block";
+                document.getElementById("room-list").style.display = "none";
+                watchRoomChanges(currentRoomObjectId);
+            } else {
+                alert("创建房间失败，请稍后重试");
+            }
+        }
+
+        // 加入房间
+        async function joinRoom(roomObjectId, roomId) {
+            const room = await getRoom(roomObjectId);
+            if (!room) {
+                alert("房间不存在");
+                return;
+            }
+
+            // 检查房间是否已满
+            if (room.player2Id) {
+                alert("房间已满");
+                return;
+            }
+
+            // 只发送需要更新的字段
+            const updateData = {
+                player2Id: playerId,
+                player2Ready: false,
+                player2BadgeId: 0
+            };
+            
+            if (room.status === "waiting") {
+                updateData.status = "ready";
+            }
+
+            const result = await updateRoom(roomObjectId, updateData);
+            if (result) {
+                currentRoomId = roomId;
+                currentRoomObjectId = roomObjectId;
+                console.log("加入房间成功");
+                window.location.href = `network-select-badge.html?roomId=${roomId}&objectId=${roomObjectId}&playerId=${playerId}&player=2`;
+            } else {
+                alert("加入房间失败，请稍后重试");
+            }
+        }
+
+        // 获取房间列表
+        async function getRoomList() {
+            const rooms = await getRooms();
+            const roomItems = document.getElementById("room-items");
+            roomItems.innerHTML = '';
+            
+            if (!rooms || rooms.length === 0) {
+                roomItems.innerHTML = '<p style="color: #fff; text-align: center;">暂无可用房间</p>';
+            } else {
+                rooms.forEach(room => {
+                    const roomId = room.id;
+                    const roomObjectId = room.objectId;
+                    const roomItem = document.createElement('div');
+                    roomItem.style.cssText = `
+                        padding: 15px;
+                        margin-bottom: 10px;
+                        background: rgba(255, 255, 255, 0.1);
+                        border: 1px solid #ffcc00;
+                        border-radius: 10px;
+                        cursor: pointer;
+                        transition: all 0.3s ease;
+                    `;
+                    roomItem.innerHTML = `<span style="color: #ffcc00; font-weight: bold;">房间 ${roomId.substring(0, 8)}...</span>`;
+                    
+                    roomItem.addEventListener('click', function() {
+                        playTapSound();
+                        joinRoom(roomObjectId, roomId);
+                    });
+                    
+                    roomItems.appendChild(roomItem);
+                });
+            }
+            
+            document.getElementById("room-list").style.display = "block";
+            document.getElementById("room-id-display").style.display = "none";
+        }
+
+        // 监听房间变化
+        function watchRoomChanges(objectId) {
+            if (watchInterval) {
+                clearInterval(watchInterval);
+            }
+
+            watchInterval = setInterval(async () => {
+                const room = await getRoom(objectId);
+                if (room && room.status === "ready") {
+                    clearInterval(watchInterval);
+                    console.log("其他玩家加入房间，开始游戏");
+                    window.location.href = `network-select-badge.html?roomId=${currentRoomId}&objectId=${currentRoomObjectId}&playerId=${playerId}&player=1`;
+                }
+            }, 1000);
+        }
+
+        // 等待DOM加载完成
+        document.addEventListener('DOMContentLoaded', function() {
+            const createRoomBtn = document.getElementById('create-room-btn');
+            const joinRoomBtn = document.getElementById('join-room-btn');
+            const backBtn = document.getElementById('back-btn');
+            
+            if (createRoomBtn) {
+                createRoomBtn.addEventListener('click', function() {
+                    playTapSound();
+                    createRoom();
+                });
+            }
+            
+            if (joinRoomBtn) {
+                joinRoomBtn.addEventListener('click', function() {
+                    playTapSound();
+                    getRoomList();
+                });
+            }
+            
+            if (backBtn) {
+                backBtn.addEventListener('click', function() {
+                    playTapSound();
+                    if (watchInterval) {
+                        clearInterval(watchInterval);
+                    }
+                    window.location.href = 'index.html';
+                });
+            }
+        });
+    </script>
+</body>
+</html>

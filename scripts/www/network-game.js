@@ -444,12 +444,57 @@ function watchGameStateChanges() {
     // 上次检查游戏状态的时间
     let lastCheckTime = 0;
     
+    // 对手移动动画相关变量
+    let opponentMoveData = null;
+    let opponentMoveProgress = 0;
+    let isPlayingOpponentMove = false;
+    
+    // 是否正在对手方向选择阶段
+    let isOpponentDirectionPhase = false;
+    
     // 使用requestAnimationFrame实现更流畅的动画
     async function update() {
         const currentTime = performance.now();
         
-        // 每50毫秒检查一次游戏状态，提高同步速度
-        if (currentTime - lastCheckTime >= 50) {
+        // 处理对手移动动画
+        if (isPlayingOpponentMove && opponentMoveData) {
+            opponentMoveProgress += 0.012;
+            
+            if (opponentMoveProgress >= 1) {
+                // 动画完成
+                opponentMoveProgress = 1;
+                const opponentIndex = opponentMoveData.playerIndex;
+                gameState.players[opponentIndex].x = opponentMoveData.endX;
+                gameState.players[opponentIndex].y = opponentMoveData.endY;
+                gameState.badgeScale = 1;
+                gameState.phase = opponentMoveData.oldPhase;
+                isPlayingOpponentMove = false;
+                opponentMoveData = null;
+                render();
+            } else {
+                // 计算跳跃高度
+                const jumpHeight = Math.sin(opponentMoveProgress * Math.PI);
+                gameState.badgeScale = 1 + jumpHeight * 0.4;
+                
+                // 计算当前位置
+                const opponentIndex = opponentMoveData.playerIndex;
+                const player = gameState.players[opponentIndex];
+                player.x = opponentMoveData.startX + (opponentMoveData.endX - opponentMoveData.startX) * opponentMoveProgress;
+                player.y = opponentMoveData.startY + (opponentMoveData.endY - opponentMoveData.startY) * opponentMoveProgress;
+                render();
+            }
+        }
+        
+        // 智能检查间隔：
+        // - 当前玩家回合：500ms检查一次
+        // - 对手方向选择：2000ms检查一次（大幅减少，因为本地已有方向动画）
+        // - 对手移动或其他状态：500ms检查一次
+        let checkInterval = 500;
+        if (isOpponentDirectionPhase) {
+            checkInterval = 2000;
+        }
+        
+        if (currentTime - lastCheckTime >= checkInterval && !isPlayingOpponentMove) {
             const room = await getRoom();
             if (!room) {
                 return;
@@ -470,13 +515,55 @@ function watchGameStateChanges() {
                     const oldPhase = gameState.phase;
                     const oldCurrentPlayer = gameState.currentPlayer;
                     const oldDirectionAngle = gameState.directionAngle;
-                    gameState = JSON.parse(JSON.stringify(newGameState));
+                    
+                    // 更新对手方向选择阶段标记
+                    const newIsOpponentDirectionPhase = newGameState.currentPlayer !== playerNum && newGameState.phase === 'direction';
+                    
+                    // 检测对手是否开始移动
+                    if (newGameState.phase === 'moving' && newGameState.currentPlayer !== playerNum) {
+                        // 保存旧位置和新位置
+                        const opponentIndex = newGameState.currentPlayer - 1;
+                        const startX = gameState.players[opponentIndex].x;
+                        const startY = gameState.players[opponentIndex].y;
+                        const endX = newGameState.players[opponentIndex].x;
+                        const endY = newGameState.players[opponentIndex].y;
+                        
+                        // 检查位置是否真的改变了
+                        if (Math.abs(startX - endX) > 0.01 || Math.abs(startY - endY) > 0.01) {
+                            // 开始移动动画
+                            opponentMoveData = {
+                                playerIndex: opponentIndex,
+                                startX: startX,
+                                startY: startY,
+                                endX: endX,
+                                endY: endY,
+                                oldPhase: oldPhase
+                            };
+                            opponentMoveProgress = 0;
+                            isPlayingOpponentMove = true;
+                            isOpponentDirectionPhase = false;
+                            
+                            // 复制其他状态，但保持旧位置
+                            gameState = JSON.parse(JSON.stringify(newGameState));
+                            gameState.players[opponentIndex].x = startX;
+                            gameState.players[opponentIndex].y = startY;
+                            gameState.phase = 'moving';
+                        } else {
+                            // 位置没有改变，正常更新
+                            gameState = JSON.parse(JSON.stringify(newGameState));
+                            isOpponentDirectionPhase = newIsOpponentDirectionPhase;
+                        }
+                    } else {
+                        // 正常更新游戏状态
+                        gameState = JSON.parse(JSON.stringify(newGameState));
+                        isOpponentDirectionPhase = newIsOpponentDirectionPhase;
+                    }
                     
                     // 如果是另一个玩家的方向选择状态，使用本地的方向角度
-                    if (gameState.currentPlayer !== playerNum && gameState.phase === 'direction') {
-                        // 平滑更新方向角度，使方向选择点动起来，速度变成20倍
-                        localDirectionAngle = (localDirectionAngle + 0.1) % (Math.PI * 2);
-                        gameState.directionAngle = localDirectionAngle;
+                    if (isOpponentDirectionPhase) {
+                        // 不更新directionAngle，让本地动画来控制
+                        // 保持旧的directionAngle，避免鬼畜
+                        gameState.directionAngle = oldDirectionAngle;
                     } else if (gameState.phase !== 'direction') {
                         // 当不是方向选择状态时，重置本地方向角度
                         localDirectionAngle = 0;
@@ -502,10 +589,10 @@ function watchGameStateChanges() {
             }
         }
         
-        // 渲染动画
-        if (gameState.currentPlayer !== playerNum && gameState.phase === 'direction') {
-            // 平滑更新方向角度，使方向选择点动起来，速度变成20倍
-            localDirectionAngle = (localDirectionAngle + 0.05) % (Math.PI * 2);
+        // 渲染动画 - 独立于网络更新，保证流畅
+        if (isOpponentDirectionPhase && !isPlayingOpponentMove) {
+            // 平滑更新方向角度，使方向选择点动起来
+            localDirectionAngle = (localDirectionAngle + 0.08) % (Math.PI * 2);
             gameState.directionAngle = localDirectionAngle;
             render();
         }
